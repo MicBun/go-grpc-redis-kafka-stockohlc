@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+option go_package = "github.com/MicBun/go-grpc-redis-kafka-stockohlc/stock";
+
+service DataStock {
+  rpc GetOneSummary(GetOneSummaryRequest) returns (Stock);
+}
+
+message Stock {
+  string symbol = 1;
+  int64  prevPrice = 2;
+  int64  openPrice = 3;
+  int64  highPrice = 4;
+  int64  lowPrice = 5;
+  int64  closePrice = 6;
+  int64  avgPrice = 7;
+  int64  volume = 8;
+  int64  value = 9;
+}
+
+message GetOneSummaryRequest {
+  string stockSymbol = 1;
+}
+
+// how to run
+// protoc --go_out=paths=source_relative:. --go-grpc_out=paths=source_relative:. stock.proto
+// go  get google.golang.org/grpc

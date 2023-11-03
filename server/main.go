@@ -20,7 +20,7 @@ type dataStockServer struct {
 }
 
 func (s *dataStockServer) GetOneSummary(ctx context.Context, in *pb.GetOneSummaryRequest) (*pb.Stock, error) {
-	panic("implement me")
+	return s.loadStockData(in.StockSymbol)
 }
 
 type SubSetData struct {
@@ -32,7 +32,7 @@ type SubSetData struct {
 	ExecutionPrice   int    `json:"execution_price,string"`
 }
 
-func (s *dataStockServer) loadStockData(stockCode string) (pb.Stock, error) {
+func (s *dataStockServer) loadStockData(stockCode string) (*pb.Stock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -115,7 +115,7 @@ func (s *dataStockServer) loadStockData(stockCode string) (pb.Stock, error) {
 		avgPrice = float64(value) / float64(volume)
 	}
 
-	return pb.Stock{
+	return &pb.Stock{
 		Symbol:     stockCode,
 		PrevPrice:  prevPrice,
 		OpenPrice:  openPrice,

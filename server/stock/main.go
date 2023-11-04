@@ -2,6 +2,7 @@ package stock
 
 import (
 	"context"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
 	"github.com/scizorman/go-ndjson"
 	"log"
@@ -11,13 +12,24 @@ import (
 
 type DataStockServer struct {
 	pb.UnimplementedDataStockServer
+	publisher pubsub.Publisher
 }
 
-func NewDataStockServer() *DataStockServer {
-	return &DataStockServer{}
+func NewDataStockServer(
+	publisher pubsub.Publisher,
+) *DataStockServer {
+	return &DataStockServer{
+		publisher: publisher,
+	}
 }
 
-func (s *DataStockServer) GetOneSummary(_ context.Context, in *pb.GetOneSummaryRequest) (*pb.Stock, error) {
+func (s *DataStockServer) GetOneSummary(ctx context.Context, in *pb.GetOneSummaryRequest) (*pb.Stock, error) {
+	if err := s.publisher.Publish(ctx, pubsub.TopicExample, &SubSetData{
+		StockCode: in.StockSymbol,
+	}); err != nil {
+		log.Fatalln("error publishing", err.Error())
+	}
+
 	return loadStockData(in.StockSymbol)
 }
 

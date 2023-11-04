@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option go_package = "github.com/MicBun/go-grpc-redis-kafka-stockohlc/stock";
+option go_package = "github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock";
 
 service DataStock {
   rpc GetOneSummary(GetOneSummaryRequest) returns (Stock);

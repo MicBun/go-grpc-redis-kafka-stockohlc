@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/db"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/message"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
-	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
@@ -17,23 +18,26 @@ type App struct {
 	gRPCServer *grpc.Server
 	subscriber pubsub.Subscriber
 	publisher  pubsub.Publisher
+	message    *message.Message
+	redisDB    *db.Redis
 }
 
 func NewApp(
 	gRPCServer *grpc.Server,
 	subscriber pubsub.Subscriber,
 	publisher pubsub.Publisher,
+	message *message.Message,
+	redisDB *db.Redis,
 ) *App {
 	app := &App{
 		gRPCServer: gRPCServer,
 		subscriber: subscriber,
 		publisher:  publisher,
+		message:    message,
+		redisDB:    redisDB,
 	}
-	pb.RegisterDataStockServer(app.gRPCServer, stock.NewDataStockServer(app.publisher))
-	app.subscriber.Subscribe(pubsub.TopicExample, func(ctx context.Context, msg *message.Message) error {
-		log.Println("received message", string(msg.Payload))
-		return nil
-	})
+	pb.RegisterDataStockServer(app.gRPCServer, stock.NewDataStockServer(app.publisher, app.redisDB))
+	app.message.Load(app.subscriber)
 
 	return app
 }
@@ -67,10 +71,19 @@ func initApp() *App {
 		log.Fatalln("error creating watermill publisher", err.Error())
 	}
 
+	dbRedis := db.NewRedis()
+	dbRedisManager := db.NewRedisManager(dbRedis)
+	stockInit := stock.NewDataStockServer(publisher, dbRedisManager)
+	if err := stockInit.LoadInitialData(context.Background()); err != nil {
+		log.Fatalln("error loading initial data", err.Error())
+	}
+
 	return NewApp(
 		grpc.NewServer(),
 		subscriber,
 		publisher,
+		message.NewMessage(),
+		dbRedisManager,
 	)
 }
 

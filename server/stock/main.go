@@ -2,35 +2,129 @@ package stock
 
 import (
 	"context"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/db"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
 	"github.com/scizorman/go-ndjson"
 	"log"
 	"math"
 	"os"
+	"strings"
 )
 
 type DataStockServer struct {
 	pb.UnimplementedDataStockServer
-	publisher pubsub.Publisher
+	publisher    pubsub.Publisher
+	redisManager *db.Redis
 }
 
 func NewDataStockServer(
 	publisher pubsub.Publisher,
+	redisManager *db.Redis,
 ) *DataStockServer {
 	return &DataStockServer{
-		publisher: publisher,
+		publisher:    publisher,
+		redisManager: redisManager,
 	}
 }
 
 func (s *DataStockServer) GetOneSummary(ctx context.Context, in *pb.GetOneSummaryRequest) (*pb.Stock, error) {
-	if err := s.publisher.Publish(ctx, pubsub.TopicExample, &SubSetData{
-		StockCode: in.StockSymbol,
-	}); err != nil {
-		log.Fatalln("error publishing", err.Error())
+	var stock *pb.Stock
+	return stock, s.redisManager.Get(ctx, strings.ToUpper(in.StockSymbol), &stock)
+}
+
+func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
+	directory, err := os.ReadDir("subsetdata")
+	if err != nil {
+		log.Fatalln("error reading directory", err.Error())
 	}
 
-	return loadStockData(in.StockSymbol)
+	firstFile := directory[0]
+	firstData, err := os.ReadFile("subsetdata/" + firstFile.Name())
+	if err != nil {
+		log.Fatalln("error reading file", err.Error())
+	}
+
+	var firstSubSetData []SubSetData
+	if err = ndjson.Unmarshal(firstData, &firstSubSetData); err != nil {
+		log.Fatalln("error unmarshalling data", err.Error())
+	}
+
+	mapStockData := make(map[string]*pb.Stock)
+	var keys []string
+	for _, subsetDatum := range firstSubSetData {
+		if _, ok := mapStockData[subsetDatum.StockCode]; !ok {
+			price := int64(subsetDatum.Price)
+			mapStockData[subsetDatum.StockCode] = &pb.Stock{
+				Symbol:    subsetDatum.StockCode,
+				PrevPrice: price,
+			}
+			keys = append(keys, subsetDatum.StockCode)
+		}
+	}
+
+	latestFileName := directory[len(directory)-1].Name()
+	latestScannedRow := 0
+	directory = directory[1:]
+	var cleanSubSetData []SubSetData
+	for _, file := range directory {
+		data, err := os.ReadFile("subsetdata/" + file.Name())
+		if err != nil {
+			log.Fatalln("error reading file", err.Error())
+		}
+
+		var tempSubsetData []SubSetData
+		if err = ndjson.Unmarshal(data, &tempSubsetData); err != nil {
+			log.Fatalln("error unmarshalling data", err.Error())
+		}
+
+		for _, subsetDatum := range tempSubsetData {
+			if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
+				cleanSubSetData = append(cleanSubSetData, subsetDatum)
+			}
+		}
+
+		if file.Name() == latestFileName {
+			latestScannedRow = len(tempSubsetData)
+		}
+	}
+
+	for _, subsetDatum := range cleanSubSetData {
+		closePrice := int64(subsetDatum.Price + subsetDatum.ExecutionPrice)
+		quantity := int64(subsetDatum.Quantity + subsetDatum.ExecutedQuantity)
+		mapStockData[subsetDatum.StockCode].ClosePrice = closePrice
+		mapStockData[subsetDatum.StockCode].Volume += quantity
+		mapStockData[subsetDatum.StockCode].Value += closePrice * quantity
+		switch {
+		case mapStockData[subsetDatum.StockCode].OpenPrice == 0:
+			mapStockData[subsetDatum.StockCode].OpenPrice = int64(subsetDatum.Price) + int64(subsetDatum.ExecutionPrice)
+			fallthrough
+		case mapStockData[subsetDatum.StockCode].HighPrice < closePrice:
+			mapStockData[subsetDatum.StockCode].HighPrice = closePrice
+			fallthrough
+		case mapStockData[subsetDatum.StockCode].LowPrice > closePrice:
+			mapStockData[subsetDatum.StockCode].LowPrice = closePrice
+		}
+	}
+
+	for _, key := range keys {
+		if mapStockData[key].Volume != 0 {
+			mapStockData[key].AvgPrice = mapStockData[key].Value / mapStockData[key].Volume
+		}
+		if err = s.redisManager.Set(ctx, key, mapStockData[key]); err != nil {
+			log.Fatalln("error setting data", err.Error())
+		}
+	}
+
+	if err = s.redisManager.Set(ctx, "latestScannedRow", latestScannedRow); err != nil {
+		log.Fatalln("error setting data", err.Error())
+	}
+
+	if err = s.redisManager.Set(ctx, "latestFileName", latestFileName); err != nil {
+		log.Fatalln("error setting data", err.Error())
+	}
+
+	return nil
 }
 
 func loadStockData(stockCode string) (*pb.Stock, error) {

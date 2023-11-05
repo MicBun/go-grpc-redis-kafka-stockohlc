@@ -44,7 +44,6 @@ func NewWatermillPublisher() (*WatermillPublisher, error) {
 			},
 			watermill.NewStdLogger(false, false),
 		)
-
 		if err != nil {
 			return &WatermillPublisher{}, err
 		}
@@ -57,17 +56,11 @@ func NewWatermillPublisher() (*WatermillPublisher, error) {
 
 func (p *WatermillPublisher) Publish(ctx context.Context, topic string, value any) error {
 	data, err := json.Marshal(value)
-
 	if err != nil {
 		return err
 	}
 
-	newMessage := message.NewMessage(watermill.NewUUID(), data)
-	if err := p.client.Publish(topic, newMessage); err != nil {
-		return err
-	}
-
-	return nil
+	return p.client.Publish(topic, message.NewMessage(watermill.NewUUID(), data))
 }
 
 func (p *WatermillPublisher) Close() error {
@@ -96,7 +89,6 @@ func NewWatermillSubscriber() (*WatermillSubscriber, error) {
 			},
 			watermill.NewStdLogger(false, false),
 		)
-
 		if err != nil {
 			return &WatermillSubscriber{}, errors.WithStack(err)
 		}
@@ -105,7 +97,6 @@ func NewWatermillSubscriber() (*WatermillSubscriber, error) {
 	}
 
 	handlerMap := make(map[string][]SubscriberHandler)
-
 	return &WatermillSubscriber{watermillSubscriberClient, handlerMap}, nil
 }
 
@@ -120,7 +111,6 @@ func (s *WatermillSubscriber) Subscribe(topic string, handler SubscriberHandler)
 func (s *WatermillSubscriber) Start(ctx context.Context) error {
 	for topic, handlers := range s.handlerMap {
 		messages, err := s.client.Subscribe(ctx, topic)
-
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -157,9 +147,7 @@ func (s *WatermillSubscriber) executeHandler(
 	defer cancelCtx()
 	defer s.recoverFromPanic(ctx, topic, msg)
 
-	err := handler(ctx, msg)
-
-	if err != nil {
+	if err := handler(ctx, msg); err != nil {
 		log.Println("error executing handler", errors.WithStack(err))
 	}
 }

@@ -154,6 +154,6 @@ func (s *WatermillSubscriber) executeHandler(
 
 func (s *WatermillSubscriber) recoverFromPanic(ctx context.Context, topic string, msg *message.Message) {
 	if r := recover(); r != nil {
-		log.Println("panic recovered", errors.WithStack(fmt.Errorf("%v", r)))
+		log.Printf("panic recovered: %s, topic: %s, message: %s", r, topic, string(msg.Payload)[1:len(msg.Payload)-1])
 	}
 }

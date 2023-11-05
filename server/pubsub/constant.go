@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	TopicExample = "grpcserver_example"
+	TopicFileUpdated = "grpcserver_file_updated"
+	TopicFileCreated = "grpcserver_file_created"
 )
 
 type SubscriberHandler func(context.Context, *message.Message) error

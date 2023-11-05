@@ -18,12 +18,9 @@ func NewRedis() *redis.Client {
 	host := os.Getenv("REDIS_HOST")
 	port := os.Getenv("REDIS_PORT")
 	address := host + ":" + fmt.Sprint(port)
-
-	client := redis.NewClient(&redis.Options{
+	return redis.NewClient(&redis.Options{
 		Addr: address,
 	})
-
-	return client
 }
 
 func NewRedisManager(client *redis.Client) *Redis {
@@ -32,50 +29,29 @@ func NewRedisManager(client *redis.Client) *Redis {
 
 func (m *Redis) Get(ctx context.Context, key string, value any) error {
 	result, err := m.client.Get(ctx, key).Result()
-
 	if errors.Is(err, redis.Nil) {
 		return errors.WithStack(errors.New("data not found"))
 	} else if err != nil {
 		return errors.WithStack(err)
 	}
 
-	err = json.Unmarshal([]byte(result), value)
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return errors.WithStack(json.Unmarshal([]byte(result), value))
 }
 
 func (m *Redis) Set(ctx context.Context, key string, value any) error {
 	rawValue, err := json.Marshal(value)
-
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	err = m.client.Set(ctx, key, rawValue, 0).Err()
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return errors.WithStack(m.client.Set(ctx, key, rawValue, 0).Err())
 }
 
 func (m *Redis) SetEx(ctx context.Context, key string, value any, duration time.Duration) error {
 	rawValue, err := json.Marshal(value)
-
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	err = m.client.Set(ctx, key, rawValue, duration).Err()
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return errors.WithStack(m.client.Set(ctx, key, rawValue, duration).Err())
 }

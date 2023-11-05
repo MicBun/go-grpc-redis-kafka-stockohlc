@@ -21,7 +21,7 @@ type Subscriber interface {
 }
 
 type Publisher interface {
-	Publish(ctx context.Context, topic string, message any) error
+	Publish(topic string, message any) error
 	Close() error
 }
 
@@ -54,7 +54,7 @@ func NewWatermillPublisher() (*WatermillPublisher, error) {
 	return &WatermillPublisher{watermillPublisherClient}, nil
 }
 
-func (p *WatermillPublisher) Publish(ctx context.Context, topic string, value any) error {
+func (p *WatermillPublisher) Publish(topic string, value any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -115,7 +115,7 @@ func (s *WatermillSubscriber) Start(ctx context.Context) error {
 			return errors.WithStack(err)
 		}
 
-		go s.processMessages(topic, messages, handlers)
+		go processMessages(topic, messages, handlers)
 	}
 
 	return nil
@@ -125,19 +125,19 @@ func (s *WatermillSubscriber) Close() error {
 	return s.client.Close()
 }
 
-func (s *WatermillSubscriber) processMessages(
+func processMessages(
 	topic string,
 	messages <-chan *message.Message,
 	handlers []SubscriberHandler,
 ) {
 	for msg := range messages {
 		for _, handler := range handlers {
-			go s.executeHandler(topic, handler, msg)
+			go executeHandler(topic, handler, msg)
 		}
 	}
 }
 
-func (s *WatermillSubscriber) executeHandler(
+func executeHandler(
 	topic string,
 	handler SubscriberHandler,
 	msg *message.Message,
@@ -145,14 +145,14 @@ func (s *WatermillSubscriber) executeHandler(
 	var listenerExecutionTimeoutInS = 30 * time.Second
 	ctx, cancelCtx := context.WithTimeout(context.Background(), listenerExecutionTimeoutInS)
 	defer cancelCtx()
-	defer s.recoverFromPanic(ctx, topic, msg)
+	defer recoverFromPanic(topic, msg)
 
 	if err := handler(ctx, msg); err != nil {
 		log.Println("error executing handler", errors.WithStack(err))
 	}
 }
 
-func (s *WatermillSubscriber) recoverFromPanic(ctx context.Context, topic string, msg *message.Message) {
+func recoverFromPanic(topic string, msg *message.Message) {
 	if r := recover(); r != nil {
 		log.Printf("panic recovered: %s, topic: %s, message: %s", r, topic, string(msg.Payload)[1:len(msg.Payload)-1])
 	}

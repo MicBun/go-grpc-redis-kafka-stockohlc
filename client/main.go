@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log"
+	"net/http"
+	"time"
+
 	pb "github.com/MicBun/go-grpc-redis-kafka-stockohlc-client/stock"
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"log"
-	"net/http"
-	"time"
 )
 
 func getOneStockSummary(client pb.DataStockClient, stockSymbol string) (*pb.Stock, error) {
@@ -30,31 +30,38 @@ func main() {
 	if err != nil {
 		log.Fatalln("fail to dial: ", err.Error())
 	}
-	defer conn.Close()
-
-	client := pb.NewDataStockClient(conn)
+	defer func(conn *grpc.ClientConn) {
+		if err = conn.Close(); err != nil {
+			log.Fatalln("fail to close: ", err.Error())
+		}
+	}(conn)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/stock/{stockSymbol}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		stockSymbol := vars["stockSymbol"]
-		stock, err := getOneStockSummary(client, stockSymbol)
-		if err != nil {
+		stock, errGetOne := getOneStockSummary(pb.NewDataStockClient(conn), stockSymbol)
+		if errGetOne != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(stock)
+		if err = json.NewEncoder(w).Encode(stock); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	})
 
-	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello World!")
-	})
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           r,
+		ReadHeaderTimeout: 3 * time.Second,
+	}
 
-	http.Handle("/", r)
-
-	fmt.Println("Client HTTP server started on :8080")
-	http.ListenAndServe(":8080", nil)
+	log.Println("Client HTTP server started on :8080")
+	if err = server.ListenAndServe(); err != nil {
+		panic(err)
+	}
 }

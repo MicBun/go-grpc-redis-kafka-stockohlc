@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock"
 	"github.com/ThreeDotsLabs/watermill/message"
@@ -21,12 +22,12 @@ func NewMessage(
 
 func (h *Message) FileCreated(ctx context.Context, msg *message.Message) error {
 	defer msg.Ack()
-	return h.stockManager.UpdateStockOnFileCreate(ctx, string(msg.Payload)[1:len(msg.Payload)-1])
+	return h.stockManager.UpdateStockOnFileCreate(ctx, string(msg.Payload))
 }
 
 func (h *Message) FileUpdated(ctx context.Context, msg *message.Message) error {
 	defer msg.Ack()
-	return h.stockManager.UpdateStockOnFileUpdate(ctx, string(msg.Payload)[1:len(msg.Payload)-1])
+	return h.stockManager.UpdateStockOnFileUpdate(ctx, string(msg.Payload))
 }
 
 func (h *Message) Load(subscriber pubsub.Subscriber) {

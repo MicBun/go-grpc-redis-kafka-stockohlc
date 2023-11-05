@@ -4,7 +4,7 @@ services:
   redis:
     image: "redis:6.2.4-alpine"
     ports:
-      - "127.0.0.1:6379:6379"
+      - "6379:6379"
 
   grpcserver:
     restart: always
@@ -29,7 +29,7 @@ services:
   zookeeper:
     image: 'bitnami/zookeeper:3.8'
     ports:
-      - 2181:2181
+      - "2181:2181"
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
     volumes:

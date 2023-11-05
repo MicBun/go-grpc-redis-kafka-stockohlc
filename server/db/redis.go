@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/go-redis/redis/v8"
-	"github.com/pkg/errors"
 	"os"
 	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/pkg/errors"
 )
 
 type Redis struct {

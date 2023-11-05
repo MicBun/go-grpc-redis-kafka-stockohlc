@@ -11,6 +11,7 @@ import (
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
+	"github.com/fsnotify/fsnotify"
 	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
@@ -23,6 +24,7 @@ type App struct {
 	message    *message.Message
 	redisDB    *db.Redis
 	mu         *sync.Mutex
+	watcher    *fsnotify.Watcher
 }
 
 type NewAppArgs struct {
@@ -32,6 +34,7 @@ type NewAppArgs struct {
 	message    *message.Message
 	redisDB    *db.Redis
 	mu         *sync.Mutex
+	watcher    *fsnotify.Watcher
 }
 
 func NewApp(
@@ -44,8 +47,9 @@ func NewApp(
 		message:    args.message,
 		redisDB:    args.redisDB,
 		mu:         args.mu,
+		watcher:    args.watcher,
 	}
-	pb.RegisterDataStockServer(app.gRPCServer, stock.NewDataStockServer(app.publisher, app.redisDB, app.mu))
+	pb.RegisterDataStockServer(app.gRPCServer, stock.NewDataStockServer(app.publisher, app.redisDB, app.mu, app.watcher))
 	app.message.Load(app.subscriber)
 
 	return app
@@ -56,7 +60,7 @@ func (a *App) Serve(ctx context.Context) error {
 		return errors.Wrap(err, "error starting subscriber")
 	}
 
-	listen, err := net.Listen("tcp", "localhost:50051")
+	listen, err := net.Listen("tcp", "grpcserver:50051")
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -71,6 +75,10 @@ func (a *App) Close() error {
 
 	if err := a.publisher.Close(); err != nil {
 		return errors.Wrap(err, "error closing publisher")
+	}
+
+	if err := a.watcher.Close(); err != nil {
+		return errors.Wrap(err, "error closing watcher")
 	}
 
 	a.gRPCServer.Stop()
@@ -94,8 +102,12 @@ func initApp() *App {
 
 	mu := new(sync.Mutex)
 	redisDB := db.NewRedisManager(db.NewRedis())
-	stockManager := stock.NewDataStockServer(publisher, redisDB, mu)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatalln("error creating watcher", err.Error())
+	}
 
+	stockManager := stock.NewDataStockServer(publisher, redisDB, mu, watcher)
 	return NewApp(
 		NewAppArgs{
 			gRPCServer: grpc.NewServer(),
@@ -104,6 +116,7 @@ func initApp() *App {
 			message:    message.NewMessage(stockManager),
 			redisDB:    redisDB,
 			mu:         mu,
+			watcher:    watcher,
 		},
 	)
 }
@@ -116,19 +129,19 @@ func main() {
 	defer cancelServeCtx()
 
 	application := initApp()
-	stockInit := stock.NewDataStockServer(application.publisher, application.redisDB, application.mu)
+	stockInit := stock.NewDataStockServer(application.publisher, application.redisDB, application.mu, application.watcher)
 	if err := stockInit.LoadInitialData(serveCtx); err != nil {
 		log.Println("error loading initial data", err.Error())
 	}
 
-	go stockInit.StartDirectoryMonitor(serveCtx, &wg)
+	go stockInit.StartDirectoryMonitor(&wg)
 
 	if err := application.Serve(serveCtx); err != nil {
 		log.Println("failed to serve", err.Error())
 	}
 	defer func(application *App) {
 		if err := application.Close(); err != nil {
-			log.Println("error closing app", err.Error())
+			log.Println("failed to close", err.Error())
 		}
 	}(application)
 

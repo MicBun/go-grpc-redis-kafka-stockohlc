@@ -2,16 +2,17 @@ package stock
 
 import (
 	"context"
+	"log"
+	"os"
+	"strings"
+	"sync"
+
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/db"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
 	"github.com/fsnotify/fsnotify"
 	"github.com/pkg/errors"
 	"github.com/scizorman/go-ndjson"
-	"log"
-	"os"
-	"strings"
-	"sync"
 )
 
 type DataStockServer struct {
@@ -19,17 +20,20 @@ type DataStockServer struct {
 	publisher    pubsub.Publisher
 	redisManager *db.Redis
 	mu           *sync.Mutex
+	watcher      *fsnotify.Watcher
 }
 
 func NewDataStockServer(
 	publisher pubsub.Publisher,
 	redisManager *db.Redis,
 	mu *sync.Mutex,
+	watcher *fsnotify.Watcher,
 ) *DataStockServer {
 	return &DataStockServer{
 		publisher:    publisher,
 		redisManager: redisManager,
 		mu:           mu,
+		watcher:      watcher,
 	}
 }
 
@@ -56,15 +60,12 @@ func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
 	}
 
 	mapStockData := make(map[string]*pb.Stock)
-	var keys []string
 	for _, subsetDatum := range firstSubSetData {
 		if _, ok := mapStockData[subsetDatum.StockCode]; !ok {
-			price := int64(subsetDatum.Price)
 			mapStockData[subsetDatum.StockCode] = &pb.Stock{
 				Symbol:    subsetDatum.StockCode,
-				PrevPrice: price,
+				PrevPrice: int64(subsetDatum.Price),
 			}
-			keys = append(keys, subsetDatum.StockCode)
 		}
 	}
 
@@ -74,7 +75,7 @@ func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
 	var cleanSubSetData []SubSetData
 	for _, file := range directory {
 		data, errRead := os.ReadFile("subsetdata/" + file.Name())
-		if err != nil {
+		if errRead != nil {
 			return errors.WithStack(errRead)
 		}
 
@@ -83,84 +84,45 @@ func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
 			return errors.WithStack(err)
 		}
 
-		for _, subsetDatum := range dirtySubsetData {
-			if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
-				cleanSubSetData = append(cleanSubSetData, subsetDatum)
-			}
-		}
-
+		cleanSubSetData = append(cleanSubSetData, getCleansedSubSetData(dirtySubsetData)...)
 		if file.Name() == latestFileName {
 			latestScannedRow = len(dirtySubsetData)
 		}
 	}
 
-	for _, subsetDatum := range cleanSubSetData {
-		closePrice := int64(subsetDatum.Price + subsetDatum.ExecutionPrice)
-		quantity := int64(subsetDatum.Quantity + subsetDatum.ExecutedQuantity)
-		mapStockData[subsetDatum.StockCode].ClosePrice = closePrice
-		mapStockData[subsetDatum.StockCode].Volume += quantity
-		mapStockData[subsetDatum.StockCode].Value += closePrice * quantity
-		switch {
-		case mapStockData[subsetDatum.StockCode].OpenPrice == 0:
-			mapStockData[subsetDatum.StockCode].OpenPrice = int64(subsetDatum.Price) + int64(subsetDatum.ExecutionPrice)
-			fallthrough
-		case mapStockData[subsetDatum.StockCode].HighPrice < closePrice:
-			mapStockData[subsetDatum.StockCode].HighPrice = closePrice
-			fallthrough
-		case mapStockData[subsetDatum.StockCode].LowPrice > closePrice:
-			mapStockData[subsetDatum.StockCode].LowPrice = closePrice
-		}
-	}
-
-	for _, key := range keys {
-		if mapStockData[key].Volume != 0 {
-			mapStockData[key].AvgPrice = mapStockData[key].Value / mapStockData[key].Volume
-		}
-		if err = s.redisManager.Set(ctx, key, mapStockData[key]); err != nil {
-			return errors.WithStack(err)
-		}
-	}
-
-	if err = s.redisManager.Set(ctx, db.LatestScannedRow, latestScannedRow); err != nil {
+	if err = s.SetMapStockData(ctx, calculateOHLC(cleanSubSetData, mapStockData)); err != nil {
 		return errors.WithStack(err)
 	}
-
-	return errors.WithStack(s.redisManager.Set(ctx, db.LatestFileName, latestFileName))
+	return setLatestScannedRowAndFileName(ctx, s.redisManager, latestScannedRow, latestFileName)
 }
 
-func (s *DataStockServer) StartDirectoryMonitor(ctx context.Context, wg *sync.WaitGroup) {
+func (s *DataStockServer) StartDirectoryMonitor(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatalf("Error creating watcher: %v", err)
-	}
-	defer watcher.Close()
-
-	if err = watcher.Add("subsetdata"); err != nil {
-		log.Fatalf("Error adding watcher: %v", err)
+	if err := s.watcher.Add("subsetdata"); err != nil {
+		log.Println("error adding watcher", err.Error())
 	}
 
 	for {
 		select {
-		case event, ok := <-watcher.Events:
+		case event, ok := <-s.watcher.Events:
+			switch {
+			case !ok:
+				return
+			case event.Has(fsnotify.Create):
+				if err := s.publisher.Publish(pubsub.TopicFileCreated, event.Name); err != nil {
+					log.Println("error publishing message", err.Error())
+				}
+			case event.Has(fsnotify.Write):
+				if err := s.publisher.Publish(pubsub.TopicFileUpdated, event.Name); err != nil {
+					log.Println("error publishing message", err.Error())
+				}
+			}
+		case errWatcher, ok := <-s.watcher.Errors:
 			if !ok {
 				return
 			}
-			if event.Has(fsnotify.Create) {
-				if err = s.publisher.Publish(ctx, pubsub.TopicFileCreated, event.Name); err != nil {
-					log.Fatalln("error publishing message", err.Error())
-				}
-			} else if event.Has(fsnotify.Write) {
-				if err = s.publisher.Publish(ctx, pubsub.TopicFileUpdated, event.Name); err != nil {
-					log.Fatalln("error publishing message", err.Error())
-				}
-			}
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("Error: %v", err)
+			log.Println("error watching directory", errWatcher.Error())
 		}
 	}
 }
@@ -170,11 +132,11 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 	defer s.mu.Unlock()
 
 	var latestScannedRow int
-	if err := s.redisManager.Get(ctx, "latestScannedRow", &latestScannedRow); err != nil {
+	if err := s.redisManager.Get(ctx, db.LatestScannedRow, &latestScannedRow); err != nil {
 		return errors.WithStack(err)
 	}
 
-	data, err := os.ReadFile(updatedFileName)
+	data, err := os.ReadFile(updatedFileName[1 : len(updatedFileName)-1])
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -211,31 +173,10 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 		}
 	}
 
-	for _, subsetDatum := range cleanSubSetData[latestScannedRow+1:] {
-		closePrice := int64(subsetDatum.Price + subsetDatum.ExecutionPrice)
-		quantity := int64(subsetDatum.Quantity + subsetDatum.ExecutedQuantity)
-		mapStockData[subsetDatum.StockCode].ClosePrice = closePrice
-		mapStockData[subsetDatum.StockCode].Volume += quantity
-		mapStockData[subsetDatum.StockCode].Value += closePrice * quantity
-		switch {
-		case mapStockData[subsetDatum.StockCode].OpenPrice == 0:
-			mapStockData[subsetDatum.StockCode].OpenPrice = closePrice
-			fallthrough
-		case mapStockData[subsetDatum.StockCode].HighPrice < closePrice:
-			mapStockData[subsetDatum.StockCode].HighPrice = closePrice
-			fallthrough
-		case mapStockData[subsetDatum.StockCode].LowPrice > closePrice:
-			mapStockData[subsetDatum.StockCode].LowPrice = closePrice
-		}
-	}
+	mapStockData = calculateOHLC(cleanSubSetData[latestScannedRow+1:], mapStockData)
 
-	for _, key := range keys {
-		if mapStockData[key].Volume != 0 {
-			mapStockData[key].AvgPrice = mapStockData[key].Value / mapStockData[key].Volume
-		}
-		if err = s.redisManager.Set(ctx, key, mapStockData[key]); err != nil {
-			return errors.WithStack(err)
-		}
+	if err = s.SetMapStockData(ctx, mapStockData); err != nil {
+		return errors.WithStack(err)
 	}
 
 	return errors.WithStack(s.redisManager.Set(ctx, "latestScannedRow", len(dirtySubsetData)-1))
@@ -249,16 +190,13 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 	if err := s.redisManager.Get(ctx, "latestFileName", &latestFileName); err != nil {
 		return errors.WithStack(err)
 	}
-
-	if createdFileName == ("subsetdata/" + latestFileName) {
+	if createdFileName[1:len(createdFileName)-1] == ("subsetdata/" + latestFileName) {
 		return nil
 	}
-
 	directory, err := os.ReadDir("subsetdata")
 	if err != nil {
-		log.Fatalln("error reading directory", err.Error())
+		return errors.WithStack(err)
 	}
-
 	for i := len(directory) - 1; i >= 0; i-- {
 		if ("subsetdata/" + directory[i].Name()) == createdFileName {
 			directory = directory[i:]
@@ -266,25 +204,20 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 		}
 	}
 
-	var cleanSubSetData []SubSetData
-	var latestScannedRow int
+	var (
+		cleanSubSetData  []SubSetData
+		latestScannedRow int
+	)
 	for _, file := range directory {
 		data, errRead := os.ReadFile("subsetdata/" + file.Name())
 		if err != nil {
 			return errors.WithStack(errRead)
 		}
-
 		var dirtySubsetData []SubSetData
 		if err = ndjson.Unmarshal(data, &dirtySubsetData); err != nil {
 			return errors.WithStack(err)
 		}
-
-		for _, subsetDatum := range dirtySubsetData {
-			if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
-				cleanSubSetData = append(cleanSubSetData, subsetDatum)
-			}
-		}
-
+		cleanSubSetData = append(cleanSubSetData, getCleansedSubSetData(dirtySubsetData)...)
 		if directory[len(directory)-1].Name() == file.Name() {
 			latestScannedRow = len(dirtySubsetData)
 		}
@@ -300,13 +233,32 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 			keys = append(keys, subsetDatum.StockCode)
 		}
 	}
-
 	for _, key := range keys {
 		if err = s.redisManager.Get(ctx, key, mapStockData[key]); err != nil {
 			return errors.WithStack(err)
 		}
 	}
+	mapStockData = calculateOHLC(cleanSubSetData, mapStockData)
+	if err = s.SetMapStockData(ctx, mapStockData); err != nil {
+		return errors.WithStack(err)
+	}
+	return setLatestScannedRowAndFileName(ctx, s.redisManager, latestScannedRow, latestFileName)
+}
 
+func (s *DataStockServer) SetMapStockData(ctx context.Context, mapStockData map[string]*pb.Stock) error {
+	for key, value := range mapStockData {
+		if value.Volume != 0 {
+			value.AvgPrice = value.Value / value.Volume
+		}
+
+		if err := s.redisManager.Set(ctx, key, value); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return nil
+}
+
+func calculateOHLC(cleanSubSetData []SubSetData, mapStockData map[string]*pb.Stock) map[string]*pb.Stock {
 	for _, subsetDatum := range cleanSubSetData {
 		closePrice := int64(subsetDatum.Price + subsetDatum.ExecutionPrice)
 		quantity := int64(subsetDatum.Quantity + subsetDatum.ExecutedQuantity)
@@ -325,18 +277,22 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 		}
 	}
 
-	for _, key := range keys {
-		if mapStockData[key].Volume != 0 {
-			mapStockData[key].AvgPrice = mapStockData[key].Value / mapStockData[key].Volume
-		}
-		if err = s.redisManager.Set(ctx, key, mapStockData[key]); err != nil {
-			return errors.WithStack(err)
-		}
-	}
+	return mapStockData
+}
 
-	if err = s.redisManager.Set(ctx, db.LatestScannedRow, latestScannedRow); err != nil {
+func setLatestScannedRowAndFileName(ctx context.Context, redisManager *db.Redis, latestScannedRow int, latestFileName string) error {
+	if err := redisManager.Set(ctx, db.LatestScannedRow, latestScannedRow); err != nil {
 		return errors.WithStack(err)
 	}
+	return errors.WithStack(redisManager.Set(ctx, db.LatestFileName, latestFileName))
+}
 
-	return errors.WithStack(s.redisManager.Set(ctx, db.LatestFileName, latestFileName))
+func getCleansedSubSetData(dirtySubsetData []SubSetData) []SubSetData {
+	var cleanSubSetData []SubSetData
+	for _, subsetDatum := range dirtySubsetData {
+		if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
+			cleanSubSetData = append(cleanSubSetData, subsetDatum)
+		}
+	}
+	return cleanSubSetData
 }

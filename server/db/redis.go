@@ -15,6 +15,12 @@ type Redis struct {
 	client *redis.Client
 }
 
+type RedisManager interface {
+	Get(ctx context.Context, key string, value any) error
+	Set(ctx context.Context, key string, value any) error
+	SetEx(ctx context.Context, key string, value any, duration time.Duration) error
+}
+
 func NewRedis() *redis.Client {
 	host := os.Getenv("REDIS_HOST")
 	port := os.Getenv("REDIS_PORT")

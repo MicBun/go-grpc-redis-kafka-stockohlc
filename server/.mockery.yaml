@@ -1,0 +1,5 @@
+with-expecter: true
+inpackage: true
+all: true
+case: 'underscore'
+disable-version-string: true

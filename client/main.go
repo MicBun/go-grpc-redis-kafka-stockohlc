@@ -1,24 +1,17 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 
-	pb "github.com/MicBun/go-grpc-redis-kafka-stockohlc-client/stock"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-client/stock"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-client/stock/pb"
 	"github.com/gorilla/mux"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
-func getOneStockSummary(client pb.DataStockClient, stockSymbol string) (*pb.Stock, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	return client.GetOneSummary(ctx, &pb.GetOneSummaryRequest{StockSymbol: stockSymbol})
-}
 
 func main() {
 	var opts []grpc.DialOption
@@ -36,11 +29,12 @@ func main() {
 		}
 	}(conn)
 
+	stockClient := stock.NewManager()
 	r := mux.NewRouter()
 	r.HandleFunc("/stock/{stockSymbol}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		stockSymbol := vars["stockSymbol"]
-		stock, errGetOne := getOneStockSummary(pb.NewDataStockClient(conn), stockSymbol)
+		stockSummary, errGetOne := stockClient.GetOneStockSummary(pb.NewDataStockClient(conn), stockSymbol)
 		if errGetOne != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -48,7 +42,7 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if err = json.NewEncoder(w).Encode(stock); err != nil {
+		if err = json.NewEncoder(w).Encode(stockSummary); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

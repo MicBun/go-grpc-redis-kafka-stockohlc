@@ -9,8 +9,6 @@ RUN go mod download
 
 COPY . ./
 
-#RUN go run main.go
-
 RUN go build -o grpcserver main.go
 
 CMD ["./grpcserver"]

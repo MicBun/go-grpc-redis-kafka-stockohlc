@@ -2,38 +2,44 @@ package stock
 
 import (
 	"context"
-	"log"
-	"os"
 	"strings"
 	"sync"
 
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/db"
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/filesystem"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/stock/pb"
-	"github.com/fsnotify/fsnotify"
 	"github.com/pkg/errors"
 	"github.com/scizorman/go-ndjson"
 )
 
+type DataStockManager interface {
+	GetOneSummary(ctx context.Context, in *pb.GetOneSummaryRequest) (*pb.Stock, error)
+	LoadInitialData(ctx context.Context) error
+	UpdateStockOnFileUpdate(ctx context.Context, updatedFileName string) error
+	UpdateStockOnFileCreate(ctx context.Context, createdFileName string) error
+	SetMapStockData(ctx context.Context, mapStockData map[string]*pb.Stock) error
+}
+
 type DataStockServer struct {
 	pb.UnimplementedDataStockServer
 	publisher    pubsub.Publisher
-	redisManager *db.Redis
+	redisManager db.RedisManager
 	mu           *sync.Mutex
-	watcher      *fsnotify.Watcher
+	fileSystem   filesystem.FS
 }
 
 func NewDataStockServer(
 	publisher pubsub.Publisher,
-	redisManager *db.Redis,
+	redisManager db.RedisManager,
 	mu *sync.Mutex,
-	watcher *fsnotify.Watcher,
+	fileSystem filesystem.FS,
 ) *DataStockServer {
 	return &DataStockServer{
 		publisher:    publisher,
 		redisManager: redisManager,
 		mu:           mu,
-		watcher:      watcher,
+		fileSystem:   fileSystem,
 	}
 }
 
@@ -43,13 +49,13 @@ func (s *DataStockServer) GetOneSummary(ctx context.Context, in *pb.GetOneSummar
 }
 
 func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
-	directory, err := os.ReadDir("subsetdata")
+	directory, err := s.fileSystem.ReadDir("subsetdata")
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	firstFile := directory[0]
-	firstData, err := os.ReadFile("subsetdata/" + firstFile.Name())
+	firstData, err := s.fileSystem.ReadFile("subsetdata/" + firstFile.Name())
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -74,7 +80,7 @@ func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
 	directory = directory[1:]
 	var cleanSubSetData []SubSetData
 	for _, file := range directory {
-		data, errRead := os.ReadFile("subsetdata/" + file.Name())
+		data, errRead := s.fileSystem.ReadFile("subsetdata/" + file.Name())
 		if errRead != nil {
 			return errors.WithStack(errRead)
 		}
@@ -96,37 +102,6 @@ func (s *DataStockServer) LoadInitialData(ctx context.Context) error {
 	return setLatestScannedRowAndFileName(ctx, s.redisManager, latestScannedRow, latestFileName)
 }
 
-func (s *DataStockServer) StartDirectoryMonitor(wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	if err := s.watcher.Add("subsetdata"); err != nil {
-		log.Println("error adding watcher", err.Error())
-	}
-
-	for {
-		select {
-		case event, ok := <-s.watcher.Events:
-			switch {
-			case !ok:
-				return
-			case event.Has(fsnotify.Create):
-				if err := s.publisher.Publish(pubsub.TopicFileCreated, event.Name); err != nil {
-					log.Println("error publishing message", err.Error())
-				}
-			case event.Has(fsnotify.Write):
-				if err := s.publisher.Publish(pubsub.TopicFileUpdated, event.Name); err != nil {
-					log.Println("error publishing message", err.Error())
-				}
-			}
-		case errWatcher, ok := <-s.watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Println("error watching directory", errWatcher.Error())
-		}
-	}
-}
-
 func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFileName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -136,7 +111,7 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 		return errors.WithStack(err)
 	}
 
-	data, err := os.ReadFile(updatedFileName[1 : len(updatedFileName)-1])
+	data, err := s.fileSystem.ReadFile(updatedFileName[1 : len(updatedFileName)-1])
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -149,21 +124,18 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 	if len(dirtySubsetData) == latestScannedRow {
 		return nil
 	}
+	dirtySubsetData = dirtySubsetData[latestScannedRow:]
 
-	var cleanSubSetData []SubSetData
 	var keys []string
 	var mapStockData = make(map[string]*pb.Stock)
-	for _, subsetDatum := range dirtySubsetData {
-		if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
-			cleanSubSetData = append(cleanSubSetData, subsetDatum)
-			if _, ok := mapStockData[subsetDatum.StockCode]; !ok {
-				mapStockData[subsetDatum.StockCode] = &pb.Stock{
-					Symbol: subsetDatum.StockCode,
-				}
-				keys = append(keys, subsetDatum.StockCode)
-			}
+	cleanSubSetData := getCleansedSubSetData(dirtySubsetData)
 
-			latestScannedRow--
+	for _, subsetDatum := range cleanSubSetData {
+		if _, ok := mapStockData[subsetDatum.StockCode]; !ok {
+			mapStockData[subsetDatum.StockCode] = &pb.Stock{
+				Symbol: subsetDatum.StockCode,
+			}
+			keys = append(keys, subsetDatum.StockCode)
 		}
 	}
 
@@ -173,13 +145,11 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 		}
 	}
 
-	mapStockData = calculateOHLC(cleanSubSetData[latestScannedRow+1:], mapStockData)
-
-	if err = s.SetMapStockData(ctx, mapStockData); err != nil {
+	if err = s.SetMapStockData(ctx, calculateOHLC(cleanSubSetData, mapStockData)); err != nil {
 		return errors.WithStack(err)
 	}
 
-	return errors.WithStack(s.redisManager.Set(ctx, "latestScannedRow", len(dirtySubsetData)-1))
+	return errors.WithStack(s.redisManager.Set(ctx, db.LatestScannedRow, latestScannedRow+len(dirtySubsetData)))
 }
 
 func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFileName string) error {
@@ -187,18 +157,18 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 	defer s.mu.Unlock()
 
 	var latestFileName string
-	if err := s.redisManager.Get(ctx, "latestFileName", &latestFileName); err != nil {
+	if err := s.redisManager.Get(ctx, db.LatestFileName, &latestFileName); err != nil {
 		return errors.WithStack(err)
 	}
 	if createdFileName[1:len(createdFileName)-1] == ("subsetdata/" + latestFileName) {
 		return nil
 	}
-	directory, err := os.ReadDir("subsetdata")
+	directory, err := s.fileSystem.ReadDir("subsetdata")
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	for i := len(directory) - 1; i >= 0; i-- {
-		if ("subsetdata/" + directory[i].Name()) == createdFileName {
+		if ("subsetdata/" + directory[i].Name()) == createdFileName[1:len(createdFileName)-1] {
 			directory = directory[i:]
 			break
 		}
@@ -209,8 +179,8 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 		latestScannedRow int
 	)
 	for _, file := range directory {
-		data, errRead := os.ReadFile("subsetdata/" + file.Name())
-		if err != nil {
+		data, errRead := s.fileSystem.ReadFile("subsetdata/" + file.Name())
+		if errRead != nil {
 			return errors.WithStack(errRead)
 		}
 		var dirtySubsetData []SubSetData
@@ -268,10 +238,10 @@ func calculateOHLC(cleanSubSetData []SubSetData, mapStockData map[string]*pb.Sto
 		switch {
 		case mapStockData[subsetDatum.StockCode].OpenPrice == 0:
 			mapStockData[subsetDatum.StockCode].OpenPrice = int64(subsetDatum.Price) + int64(subsetDatum.ExecutionPrice)
-			fallthrough
+			mapStockData[subsetDatum.StockCode].HighPrice = int64(subsetDatum.Price) + int64(subsetDatum.ExecutionPrice)
+			mapStockData[subsetDatum.StockCode].LowPrice = int64(subsetDatum.Price) + int64(subsetDatum.ExecutionPrice)
 		case mapStockData[subsetDatum.StockCode].HighPrice < closePrice:
 			mapStockData[subsetDatum.StockCode].HighPrice = closePrice
-			fallthrough
 		case mapStockData[subsetDatum.StockCode].LowPrice > closePrice:
 			mapStockData[subsetDatum.StockCode].LowPrice = closePrice
 		}
@@ -280,7 +250,7 @@ func calculateOHLC(cleanSubSetData []SubSetData, mapStockData map[string]*pb.Sto
 	return mapStockData
 }
 
-func setLatestScannedRowAndFileName(ctx context.Context, redisManager *db.Redis, latestScannedRow int, latestFileName string) error {
+func setLatestScannedRowAndFileName(ctx context.Context, redisManager db.RedisManager, latestScannedRow int, latestFileName string) error {
 	if err := redisManager.Set(ctx, db.LatestScannedRow, latestScannedRow); err != nil {
 		return errors.WithStack(err)
 	}

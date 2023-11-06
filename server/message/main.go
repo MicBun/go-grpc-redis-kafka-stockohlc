@@ -9,11 +9,11 @@ import (
 )
 
 type Message struct {
-	stockManager *stock.DataStockServer
+	stockManager stock.DataStockManager
 }
 
 func NewMessage(
-	stockManager *stock.DataStockServer,
+	stockManager stock.DataStockManager,
 ) *Message {
 	return &Message{
 		stockManager: stockManager,

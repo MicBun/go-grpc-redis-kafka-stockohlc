@@ -232,6 +232,11 @@ func calculateOHLC(cleanSubSetData []SubSetData, mapStockData map[string]*pb.Sto
 	for _, subsetDatum := range cleanSubSetData {
 		closePrice := int64(subsetDatum.Price + subsetDatum.ExecutionPrice)
 		quantity := int64(subsetDatum.Quantity + subsetDatum.ExecutedQuantity)
+		if quantity == 0 {
+			mapStockData[subsetDatum.StockCode] = new(pb.Stock)
+			mapStockData[subsetDatum.StockCode].PrevPrice = closePrice
+			continue
+		}
 		mapStockData[subsetDatum.StockCode].ClosePrice = closePrice
 		mapStockData[subsetDatum.StockCode].Volume += quantity
 		mapStockData[subsetDatum.StockCode].Value += closePrice * quantity
@@ -260,7 +265,7 @@ func setLatestScannedRowAndFileName(ctx context.Context, redisManager db.RedisMa
 func getCleansedSubSetData(dirtySubsetData []SubSetData) []SubSetData {
 	var cleanSubSetData []SubSetData
 	for _, subsetDatum := range dirtySubsetData {
-		if subsetDatum.Type == "E" || subsetDatum.Type == "P" {
+		if subsetDatum.Type == "E" || subsetDatum.Type == "P" || (subsetDatum.Quantity == 0 && subsetDatum.ExecutedQuantity == 0) {
 			cleanSubSetData = append(cleanSubSetData, subsetDatum)
 		}
 	}

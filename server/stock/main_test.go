@@ -62,8 +62,9 @@ func TestDataStockServer_LoadInitialData(t *testing.T) {
 		}, nil)
 		instance.fileSystem.EXPECT().ReadFile(mock.Anything).Return([]byte(
 			`{"stock_code":"test","volume":"1","type":"E","price":"50"}
-			{"stock_code":"test","volume":"1","type":"E","price":"55"}
-			{"stock_code":"test","volume":"1","type":"E","price":"45"}`,
+			{"stock_code":"test","volume":"1","type":"E","price":"55","quantity":"1"}
+			{"stock_code":"test","volume":"1","type":"E","price":"45","quantity":"1"}
+			{"stock_code":"test","volume":"1","type":"E","price":"60","quantity":"1"}`,
 		), nil)
 		instance.redis.EXPECT().Set(mock.Anything, mock.Anything, mock.Anything).Return(nil)
 

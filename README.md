@@ -15,6 +15,14 @@ You can also rebuild the image by executing this command:
 ```
 docker-compose up --build
 ```
+To get a stock summary, you can visit this url on your browser or by using postman:
+```
+http://localhost:8080/stock/{stock_symbol}
+```
+replace `{stock_symbol}` with the stock symbol you want to get the summary. For example, if you want to get the summary of `BBRI` stock, you can visit this url:
+```
+http://localhost:8080/stock/BBRI
+```
 
 ## How to test
 You can test this project by executing this command:

@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 
+	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/message"
 	"github.com/MicBun/go-grpc-redis-kafka-stockohlc-server/pubsub"
 	"github.com/fsnotify/fsnotify"
 )
@@ -53,11 +54,17 @@ func (w *Watcher) StartDirectoryMonitor(wg *sync.WaitGroup) {
 			case !ok:
 				return
 			case event.Has(fsnotify.Create):
-				if err := w.publisher.Publish(pubsub.TopicFileCreated, event.Name); err != nil {
+				if err := w.publisher.Publish(pubsub.TopicFileUpdated, message.FileUpdatedSchemaMessage{
+					FileName: event.Name,
+					IsCreate: true,
+				}); err != nil {
 					log.Println("error publishing message", err.Error())
 				}
 			case event.Has(fsnotify.Write):
-				if err := w.publisher.Publish(pubsub.TopicFileUpdated, event.Name); err != nil {
+				if err := w.publisher.Publish(pubsub.TopicFileUpdated, message.FileUpdatedSchemaMessage{
+					FileName: event.Name,
+					IsCreate: false,
+				}); err != nil {
 					log.Println("error publishing message", err.Error())
 				}
 			}

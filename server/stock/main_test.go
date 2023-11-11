@@ -139,7 +139,7 @@ func TestDataStockServer_UpdateStockOnFileCreate(t *testing.T) {
 			&mockDirEntry,
 		}, nil)
 
-		assert.NoError(t, instance.stock.UpdateStockOnFileCreate(context.Background(), `"subsetdata/test"`))
+		assert.NoError(t, instance.stock.UpdateStockOnFileCreate(context.Background(), `subsetdata/test`))
 	})
 
 	t.Run("Error - it should return error when redis get failed", func(t *testing.T) {

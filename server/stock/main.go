@@ -111,7 +111,7 @@ func (s *DataStockServer) UpdateStockOnFileUpdate(ctx context.Context, updatedFi
 		return errors.WithStack(err)
 	}
 
-	data, err := s.fileSystem.ReadFile(updatedFileName[1 : len(updatedFileName)-1])
+	data, err := s.fileSystem.ReadFile(updatedFileName)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -160,7 +160,7 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 	if err := s.redisManager.Get(ctx, db.LatestFileName, &latestFileName); err != nil {
 		return errors.WithStack(err)
 	}
-	if createdFileName[1:len(createdFileName)-1] == ("subsetdata/" + latestFileName) {
+	if createdFileName == ("subsetdata/" + latestFileName) {
 		return nil
 	}
 	directory, err := s.fileSystem.ReadDir("subsetdata")
@@ -168,7 +168,7 @@ func (s *DataStockServer) UpdateStockOnFileCreate(ctx context.Context, createdFi
 		return errors.WithStack(err)
 	}
 	for i := len(directory) - 1; i >= 0; i-- {
-		if ("subsetdata/" + directory[i].Name()) == createdFileName[1:len(createdFileName)-1] {
+		if ("subsetdata/" + directory[i].Name()) == createdFileName {
 			directory = directory[i:]
 			break
 		}
